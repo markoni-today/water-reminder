@@ -1,0 +1,72 @@
+# =============================================================================
+# Water Reminder Bot - Docker Compose Configuration
+# =============================================================================
+# 
+# Использование:
+#   docker-compose up -d          # Запуск в фоне
+#   docker-compose logs -f        # Просмотр логов
+#   docker-compose stop           # Остановка
+#   docker-compose restart        # Перезапуск
+#   docker-compose down           # Остановка и удаление контейнера
+# 
+# =============================================================================
+
+version: '3.8'
+
+services:
+  water_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    container_name: water_reminder_bot
+    
+    # Автоматический перезапуск при падении или перезагрузке системы
+    restart: unless-stopped
+    
+    # Переменные окружения из .env файла
+    env_file:
+      - .env
+    
+    # Дополнительные переменные окружения
+    environment:
+      - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
+    
+    # Volume для персистентного хранения данных
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    
+    # Ограничение ресурсов (опционально)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    
+    # Логирование
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Healthcheck
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3; conn = sqlite3.connect('/app/data/reminders.db'); conn.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# Volumes для хранения данных
+volumes:
+  data:
+    driver: local
+  logs:
+    driver: local
+

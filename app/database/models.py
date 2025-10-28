@@ -1,0 +1,105 @@
+"""
+Определения таблиц БД и функции инициализации
+"""
+import sqlite3
+import logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+# Глобальная переменная для имени базы данных
+DB_NAME = "reminders.db"
+
+def set_db_name(db_name: str):
+    """Устанавливает имя базы данных для всех операций."""
+    global DB_NAME
+    DB_NAME = db_name
+    logger.info(f"База данных установлена: {DB_NAME}")
+
+def get_connection():
+    """Возвращает соединение с БД."""
+    return sqlite3.connect(DB_NAME)
+
+def init_db(db_name: Optional[str] = None):
+    """
+    Инициализирует базу данных и создает все необходимые таблицы.
+    
+    Args:
+        db_name: Имя файла базы данных (если None, используется DB_NAME)
+    """
+    global DB_NAME
+    if db_name is None:
+        db_name = DB_NAME
+    else:
+        DB_NAME = db_name
+    
+    try:
+        con = sqlite3.connect(db_name)
+        cur = con.cursor()
+        
+        # ==================================================================
+        # ТАБЛИЦА: Настройки напоминаний о воде
+        # ==================================================================
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS water_reminders (
+                chat_id INTEGER PRIMARY KEY,
+                message TEXT NOT NULL,
+                interval_minutes INTEGER NOT NULL,
+                start_hour INTEGER NOT NULL,
+                end_hour INTEGER NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                timezone TEXT DEFAULT 'Etc/GMT-3',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # ==================================================================
+        # НОВАЯ ТАБЛИЦА: История отправки напоминаний о воде
+        # Решает проблему с пропущенными уведомлениями
+        # ==================================================================
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS water_reminder_history (
+                chat_id INTEGER PRIMARY KEY,
+                last_sent_time TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (chat_id) REFERENCES water_reminders(chat_id) ON DELETE CASCADE
+            )
+        """)
+        
+        # ==================================================================
+        # ТАБЛИЦА: Кастомные напоминания
+        # ==================================================================
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS custom_reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                message TEXT NOT NULL,
+                reminder_time TEXT NOT NULL,
+                frequency TEXT NOT NULL CHECK(frequency IN ('once', 'daily', 'weekly')),
+                timezone TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # ==================================================================
+        # ИНДЕКСЫ для производительности
+        # ==================================================================
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_water_active ON water_reminders(is_active)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_custom_chat_id ON custom_reminders(chat_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_custom_active ON custom_reminders(is_active)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_custom_frequency ON custom_reminders(frequency)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_custom_time ON custom_reminders(reminder_time)")
+        
+        con.commit()
+        logger.info("✅ База данных успешно инициализирована")
+        
+    except sqlite3.Error as e:
+        logger.error(f"❌ Ошибка при инициализации БД: {e}")
+        raise
+    finally:
+        if con:
+            con.close()
+
