@@ -10,7 +10,7 @@ from telegram.ext import CallbackContext, ConversationHandler
 
 from app.config import (
     WATER_MESSAGE, WATER_START_TIME, WATER_END_TIME, WATER_INTERVAL,
-    DEFAULT_TIMEZONE, Messages
+    DEFAULT_TIMEZONE, DEFAULT_START_HOUR, DEFAULT_END_HOUR, Messages
 )
 from app.database import (
     get_water_reminder,
@@ -40,8 +40,9 @@ async def check_and_send_water_reminder(application, chat_id: int, settings: dic
         user_tz = pytz.timezone(settings.get('timezone', DEFAULT_TIMEZONE))
         now = datetime.now(user_tz)
         
-        start_hour = settings.get('start_hour', 9)
-        end_hour = settings.get('end_hour', 21)
+        # ИСПРАВЛЕНИЕ: Используем значения по умолчанию (8-23) если не установлены
+        start_hour = settings.get('start_hour', DEFAULT_START_HOUR)
+        end_hour = settings.get('end_hour', DEFAULT_END_HOUR)
         interval_minutes = settings.get('interval_minutes', 60)
         message = settings.get('message', 'Время пить воду! 💧')
         
@@ -49,7 +50,7 @@ async def check_and_send_water_reminder(application, chat_id: int, settings: dic
         
         # Проверяем, находимся ли мы в рабочем диапазоне
         if start_hour <= now.hour < end_hour:
-            # ИСПРАВЛЕНО: Проверяем пропущенные напоминания
+            # ИСПРАВЛЕНО: Упрощенная логика пропущенных напоминаний
             last_sent = get_last_water_reminder_time(chat_id)
             
             if last_sent:
@@ -57,19 +58,17 @@ async def check_and_send_water_reminder(application, chat_id: int, settings: dic
                 if last_sent_dt.tzinfo is None:
                     last_sent_dt = user_tz.localize(last_sent_dt)
                 
-                time_diff = (now - last_sent_dt).total_seconds() / 60  # в минутах
-                missed_count = int(time_diff / interval_minutes) - 1
+                time_since_last = (now - last_sent_dt).total_seconds() / 60  # в минутах
                 
-                if missed_count > 0:
-                    # Отправляем уведомление о пропущенных напоминаниях
-                    warning_text = Messages.MISSED_REMINDERS_WARNING.format(
-                        count=missed_count,
-                        message=message
-                    )
+                # ИСПРАВЛЕНИЕ: Отправляем предупреждение только если пропущено МНОГО (3+)
+                # И только один раз, а не за каждое пропущенное
+                if time_since_last > interval_minutes * 3:  # Пропущено 3+ напоминания
+                    missed_count = int(time_since_last / interval_minutes)
+                    warning_text = f"⚠️ Пропущено {missed_count} напоминаний за время отсутствия.\n\n{message}"
                     await application.bot.send_message(chat_id=chat_id, text=warning_text)
-                    logger.warning(f"⚠️ Пропущено {missed_count} напоминаний для {chat_id}")
+                    logger.warning(f"⚠️ Пропущено {missed_count} напоминаний для {chat_id} (время простоя: {time_since_last:.0f} мин)")
                 else:
-                    # Обычное напоминание
+                    # Обычное напоминание без предупреждения о пропущенных
                     await application.bot.send_message(chat_id=chat_id, text=message)
             else:
                 # Первое напоминание
@@ -199,8 +198,20 @@ async def water_get_interval(update: Update, context: CallbackContext):
         # Получаем все данные из user_data
         user_settings = context.user_data.get('water_settings', {})
         message = user_settings.get('message', 'Время пить воду! 💧')
-        start_hour = user_settings.get('start_time', 9)
-        end_hour = user_settings.get('end_time', 21)
+        # ИСПРАВЛЕНИЕ: Используем значения по умолчанию (8-23) если не установлены
+        start_hour = user_settings.get('start_time', DEFAULT_START_HOUR)
+        end_hour = user_settings.get('end_time', DEFAULT_END_HOUR)
+        
+        # ВАЛИДАЦИЯ: проверяем что интервал разумный для рабочего времени
+        work_hours = end_hour - start_hour
+        max_interval = work_hours * 60
+        
+        if interval > max_interval:
+            await update.callback_query.answer(
+                f"❌ Интервал {interval} мин слишком большой для рабочего времени {work_hours} часов (максимум {max_interval} мин)",
+                show_alert=True
+            )
+            return WATER_INTERVAL
         
         # Подготавливаем данные для сохранения
         water_settings = {

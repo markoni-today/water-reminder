@@ -16,6 +16,8 @@ from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 
 from ..config import (
     DEFAULT_TIMEZONE,
+    DEFAULT_START_HOUR,
+    DEFAULT_END_HOUR,
     MISFIRE_GRACE_TIME
 )
 from .async_wrapper import async_to_sync
@@ -227,8 +229,9 @@ class JobManager:
             user_tz_str = settings.get('timezone', DEFAULT_TIMEZONE)
             user_tz = pytz.timezone(user_tz_str)
             
-            start_hour = settings.get('start_hour', 9)
-            end_hour = settings.get('end_hour', 21)
+            # ИСПРАВЛЕНИЕ: Используем значения по умолчанию (8-23) если не установлены
+            start_hour = settings.get('start_hour', DEFAULT_START_HOUR)
+            end_hour = settings.get('end_hour', DEFAULT_END_HOUR)
             interval_minutes = settings.get('interval_minutes', 60)
             
             # Вычисляем все времена отправки в течение дня
@@ -236,7 +239,28 @@ class JobManager:
                 start_hour, end_hour, interval_minutes, user_tz
             )
             
-            logger.info(f"📅 Планируем {len(reminder_times)} напоминаний о воде для {chat_id}")
+            # ИСПРАВЛЕНИЕ: Фильтруем прошедшие времена - оставляем только будущие
+            now = datetime.now(user_tz)
+            current_hour = now.hour
+            current_minute = now.minute
+            
+            # Если сейчас в рабочее время, фильтруем только будущие времена
+            if start_hour <= current_hour < end_hour:
+                filtered_times = [
+                    t for t in reminder_times 
+                    if t.hour > current_hour or (t.hour == current_hour and t.minute > current_minute)
+                ]
+                reminder_times = filtered_times
+                logger.info(f"🔍 Фильтрация: оставлено {len(reminder_times)} будущих напоминаний (исключено прошедших)")
+            elif current_hour >= end_hour:
+                # Уже позже рабочего времени - планируем только на завтра
+                reminder_times = [
+                    t for t in reminder_times 
+                    if t.date() > now.date()  # Только завтрашние
+                ]
+                logger.info(f"🌙 Уже позже рабочего времени, планируем на завтра: {len(reminder_times)} напоминаний")
+            
+            logger.info(f"📅 Планируем {len(reminder_times)} напоминаний о воде для {chat_id} (рабочее время: {start_hour}:00-{end_hour}:00, интервал: {interval_minutes} мин)")
             
             # Создаем отдельную задачу для каждого времени
             for idx, reminder_time in enumerate(reminder_times):
@@ -415,7 +439,9 @@ class JobManager:
         timezone: pytz.timezone
     ) -> List[datetime]:
         """
-        Вычисляет все времена напоминаний в течение дня.
+        Вычисляет все времена напоминаний с правильным выравниванием по интервалу.
+        Например, для интервала 30 минут: X:00, X:30, (X+1):00, (X+1):30...
+        Для интервала 90 минут: X:00, X:30 (через 1.5 часа), (X+1):00, (X+1):30...
         
         Args:
             start_hour: Час начала (0-23)
@@ -424,16 +450,36 @@ class JobManager:
             timezone: Часовой пояс
             
         Returns:
-            Список datetime объектов для каждого напоминания
+            Список datetime объектов для каждого напоминания (выровненных по интервалу)
         """
         reminder_times = []
         now = datetime.now(timezone)
+        
+        # Начинаем с start_hour:00
         current_time = now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
         end_time = now.replace(hour=end_hour, minute=0, second=0, microsecond=0)
         
-        while current_time < end_time:
+        # Вычисляем времена напоминаний с интервалом
+        # Интервал может быть больше 60 минут, поэтому нужно правильно обрабатывать переход часов
+        while current_time <= end_time:
+            # Проверяем что время не выходит за границу end_hour
+            if current_time.hour > end_hour:
+                break
+            if current_time.hour == end_hour and current_time.minute > 0:
+                break
+                
             reminder_times.append(current_time)
+            
+            # Добавляем интервал
             current_time += timedelta(minutes=interval_minutes)
+            
+            # Если перешли на следующий день, останавливаемся
+            if current_time.date() > now.date():
+                break
+        
+        logger.debug(f"Вычислено {len(reminder_times)} времен напоминаний для интервала {interval_minutes} мин (с {start_hour}:00 до {end_hour}:00)")
+        if reminder_times:
+            logger.debug(f"Первое время: {reminder_times[0].strftime('%H:%M')}, последнее: {reminder_times[-1].strftime('%H:%M')}")
         
         return reminder_times
     
