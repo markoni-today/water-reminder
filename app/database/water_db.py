@@ -15,10 +15,11 @@ logger = logging.getLogger(__name__)
 def save_water_reminder(chat_id: int, settings: Dict[str, Any]):
     """
     Сохраняет или обновляет настройки напоминания о воде для пользователя.
+    Использует фиксированные значения: 8-23, 60 минут, фиксированное сообщение.
     
     Args:
         chat_id: ID чата пользователя
-        settings: Словарь с настройками (message, interval_minutes, start_hour, end_hour, timezone, is_active)
+        settings: Словарь с настройками (is_active, onboarding_completed, timezone)
     """
     try:
         logger.info(f"💾 Сохраняем настройки воды для {chat_id}: {settings}")
@@ -26,16 +27,18 @@ def save_water_reminder(chat_id: int, settings: Dict[str, Any]):
         with sqlite3.connect(DB_NAME) as con:
             cur = con.cursor()
             
-            message = settings.get('message', 'Время пить воду! 💧')
-            interval_minutes = settings.get('interval_minutes', settings.get('interval', 60))
-            start_hour = settings.get('start_hour', settings.get('start_time', 9))
-            end_hour = settings.get('end_hour', settings.get('end_time', 21))
+            # Фиксированные значения
+            message = 'Время пить воду! 💧'
+            interval_minutes = 60
+            start_hour = 8
+            end_hour = 23
             timezone = settings.get('timezone', 'Etc/GMT-3')
             is_active = settings.get('is_active', True)
+            onboarding_completed = settings.get('onboarding_completed', False)
             
             cur.execute("""
-                INSERT INTO water_reminders (chat_id, message, interval_minutes, start_hour, end_hour, timezone, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO water_reminders (chat_id, message, interval_minutes, start_hour, end_hour, timezone, is_active, onboarding_completed)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chat_id) DO UPDATE SET
                     message = excluded.message,
                     interval_minutes = excluded.interval_minutes,
@@ -43,8 +46,9 @@ def save_water_reminder(chat_id: int, settings: Dict[str, Any]):
                     end_hour = excluded.end_hour,
                     timezone = excluded.timezone,
                     is_active = excluded.is_active,
+                    onboarding_completed = excluded.onboarding_completed,
                     updated_at = CURRENT_TIMESTAMP
-            """, (chat_id, message, interval_minutes, start_hour, end_hour, timezone, int(is_active)))
+            """, (chat_id, message, interval_minutes, start_hour, end_hour, timezone, int(is_active), int(onboarding_completed)))
             con.commit()
             logger.info(f"✅ Настройки напоминания о воде для {chat_id} успешно сохранены")
     except sqlite3.Error as e:
@@ -70,6 +74,7 @@ def get_water_reminder(chat_id: int) -> Optional[Dict[str, Any]]:
             if row:
                 result = dict(row)
                 result['is_active'] = bool(result['is_active'])
+                result['onboarding_completed'] = bool(result.get('onboarding_completed', False))
                 return result
             return None
     except sqlite3.Error as e:
@@ -119,61 +124,37 @@ def get_all_active_water_reminders() -> List[Dict[str, Any]]:
             for row in rows:
                 row_dict = dict(row)
                 row_dict['is_active'] = bool(row_dict['is_active'])
+                row_dict['onboarding_completed'] = bool(row_dict.get('onboarding_completed', False))
                 result.append(row_dict)
             return result
     except sqlite3.Error as e:
         logger.error(f"❌ Ошибка при получении всех активных напоминаний о воде: {e}")
         return []
 
-# =============================================================================
-# НОВЫЕ ФУНКЦИИ: История отправки напоминаний о воде
-# Решает проблему с отслеживанием пропущенных уведомлений
-# =============================================================================
-
-def save_last_water_reminder_time(chat_id: int, timestamp: str) -> bool:
+def set_onboarding_completed(chat_id: int, completed: bool = True):
     """
-    Сохраняет время последнего отправленного напоминания о воде.
+    Устанавливает флаг прохождения онбординга для пользователя.
     
     Args:
         chat_id: ID чата пользователя
-        timestamp: ISO формат времени отправки
-        
-    Returns:
-        True если успешно сохранено, False в случае ошибки
+        completed: True если онбординг пройден, False если нет
     """
     try:
         with sqlite3.connect(DB_NAME) as con:
             cur = con.cursor()
             cur.execute("""
-                INSERT INTO water_reminder_history (chat_id, last_sent_time)
-                VALUES (?, ?)
-                ON CONFLICT(chat_id) DO UPDATE SET 
-                    last_sent_time = excluded.last_sent_time,
-                    updated_at = CURRENT_TIMESTAMP
-            """, (chat_id, timestamp))
+                UPDATE water_reminders 
+                SET onboarding_completed = ?, updated_at = CURRENT_TIMESTAMP 
+                WHERE chat_id = ?
+            """, (int(completed), chat_id))
             con.commit()
-            return True
+            
+            if cur.rowcount == 0:
+                logger.warning(f"⚠️ Напоминание о воде для {chat_id} не найдено для обновления onboarding_completed")
+            else:
+                logger.info(f"✅ Флаг onboarding_completed для {chat_id} изменен на {completed}")
     except sqlite3.Error as e:
-        logger.error(f"❌ Ошибка при сохранении истории напоминания: {e}")
-        return False
+        logger.error(f"❌ Ошибка при изменении onboarding_completed для {chat_id}: {e}")
+        raise
 
-def get_last_water_reminder_time(chat_id: int) -> Optional[str]:
-    """
-    Получает время последнего отправленного напоминания о воде.
-    
-    Args:
-        chat_id: ID чата пользователя
-        
-    Returns:
-        ISO формат времени или None, если не найдено
-    """
-    try:
-        with sqlite3.connect(DB_NAME) as con:
-            cur = con.cursor()
-            cur.execute("SELECT last_sent_time FROM water_reminder_history WHERE chat_id = ?", (chat_id,))
-            row = cur.fetchone()
-            return row[0] if row else None
-    except sqlite3.Error as e:
-        logger.error(f"❌ Ошибка при получении истории напоминания: {e}")
-        return None
 

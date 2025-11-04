@@ -75,8 +75,75 @@ def migrate_add_updated_at():
         logger.error(f"❌ Ошибка при выполнении миграции: {e}")
         raise
 
+def migrate_remove_custom_tables():
+    """Удаляет таблицы кастомных напоминаний и истории."""
+    try:
+        with sqlite3.connect(DB_NAME) as con:
+            cur = con.cursor()
+            
+            # Удаляем таблицу custom_reminders если существует
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='custom_reminders'")
+            if cur.fetchone():
+                logger.info("🗑️ Удаляем таблицу custom_reminders")
+                cur.execute("DROP TABLE IF EXISTS custom_reminders")
+                con.commit()
+                logger.info("✅ Таблица custom_reminders удалена")
+            else:
+                logger.info("✓ Таблица custom_reminders не существует")
+            
+            # Удаляем таблицу water_reminder_history если существует
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='water_reminder_history'")
+            if cur.fetchone():
+                logger.info("🗑️ Удаляем таблицу water_reminder_history")
+                cur.execute("DROP TABLE IF EXISTS water_reminder_history")
+                con.commit()
+                logger.info("✅ Таблица water_reminder_history удалена")
+            else:
+                logger.info("✓ Таблица water_reminder_history не существует")
+            
+            # Удаляем индексы для custom_reminders если существуют
+            cur.execute("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_custom%'")
+            indexes = cur.fetchall()
+            for index in indexes:
+                logger.info(f"🗑️ Удаляем индекс {index[0]}")
+                cur.execute(f"DROP INDEX IF EXISTS {index[0]}")
+                con.commit()
+            
+    except sqlite3.Error as e:
+        logger.error(f"❌ Ошибка при удалении таблиц: {e}")
+        raise
+
+def migrate_add_onboarding_completed():
+    """Добавляет колонку onboarding_completed в water_reminders."""
+    try:
+        with sqlite3.connect(DB_NAME) as con:
+            cur = con.cursor()
+            
+            if not check_column_exists(cur, 'water_reminders', 'onboarding_completed'):
+                logger.info("➕ Добавляем колонку onboarding_completed в water_reminders")
+                cur.execute("""
+                    ALTER TABLE water_reminders 
+                    ADD COLUMN onboarding_completed BOOLEAN DEFAULT 0
+                """)
+                # Сбрасываем onboarding_completed для всех существующих пользователей
+                cur.execute("""
+                    UPDATE water_reminders 
+                    SET onboarding_completed = 0
+                    WHERE onboarding_completed IS NULL
+                """)
+                con.commit()
+                logger.info("✅ Колонка onboarding_completed добавлена в water_reminders")
+            else:
+                logger.info("✓ Колонка onboarding_completed уже существует в water_reminders")
+            
+    except sqlite3.Error as e:
+        logger.error(f"❌ Ошибка при добавлении onboarding_completed: {e}")
+        raise
+
 def run_all_migrations():
     """Запускает все необходимые миграции."""
     logger.info("🔄 Запуск миграций базы данных...")
     migrate_add_updated_at()
+    migrate_remove_custom_tables()
+    migrate_add_onboarding_completed()
     logger.info("✅ Все миграции выполнены успешно")
