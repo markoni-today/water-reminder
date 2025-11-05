@@ -14,7 +14,11 @@ def check_column_exists(cur, table_name: str, column_name: str) -> bool:
     return column_name in columns
 
 def migrate_add_updated_at():
-    """Добавляет колонку updated_at в таблицы, если её нет."""
+    """
+    Добавляет колонку updated_at в таблицы, если её нет.
+    
+    ИСПРАВЛЕНО: Проверяет существование таблиц перед добавлением колонок.
+    """
     try:
         with sqlite3.connect(DB_NAME) as con:
             cur = con.cursor()
@@ -27,49 +31,37 @@ def migrate_add_updated_at():
                     ADD COLUMN updated_at TEXT
                 """)
                 # Устанавливаем значение по умолчанию для существующих записей
-                # Используем created_at если есть, иначе текущее время
-                if check_column_exists(cur, 'water_reminders', 'created_at'):
-                    cur.execute("""
-                        UPDATE water_reminders 
-                        SET updated_at = created_at 
-                        WHERE updated_at IS NULL
-                    """)
-                else:
-                    cur.execute("""
-                        UPDATE water_reminders 
-                        SET updated_at = datetime('now') 
-                        WHERE updated_at IS NULL
-                    """)
+                cur.execute("""
+                    UPDATE water_reminders 
+                    SET updated_at = datetime('now') 
+                    WHERE updated_at IS NULL
+                """)
                 con.commit()
                 logger.info("✅ Колонка updated_at добавлена в water_reminders")
             else:
                 logger.info("✓ Колонка updated_at уже существует в water_reminders")
             
-            # Проверяем и добавляем updated_at в custom_reminders
-            if not check_column_exists(cur, 'custom_reminders', 'updated_at'):
-                logger.info("➕ Добавляем колонку updated_at в custom_reminders")
-                cur.execute("""
-                    ALTER TABLE custom_reminders 
-                    ADD COLUMN updated_at TEXT
-                """)
-                # Устанавливаем значение по умолчанию для существующих записей
-                # Используем created_at если есть, иначе текущее время
-                if check_column_exists(cur, 'custom_reminders', 'created_at'):
+            # ИСПРАВЛЕНИЕ: Проверяем существование таблицы custom_reminders перед работой с ней
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='custom_reminders'")
+            if cur.fetchone():
+                # Таблица существует - добавляем updated_at
+                if not check_column_exists(cur, 'custom_reminders', 'updated_at'):
+                    logger.info("➕ Добавляем колонку updated_at в custom_reminders")
                     cur.execute("""
-                        UPDATE custom_reminders 
-                        SET updated_at = created_at 
-                        WHERE updated_at IS NULL
+                        ALTER TABLE custom_reminders 
+                        ADD COLUMN updated_at TEXT
                     """)
-                else:
                     cur.execute("""
                         UPDATE custom_reminders 
                         SET updated_at = datetime('now') 
                         WHERE updated_at IS NULL
                     """)
-                con.commit()
-                logger.info("✅ Колонка updated_at добавлена в custom_reminders")
+                    con.commit()
+                    logger.info("✅ Колонка updated_at добавлена в custom_reminders")
+                else:
+                    logger.info("✓ Колонка updated_at уже существует в custom_reminders")
             else:
-                logger.info("✓ Колонка updated_at уже существует в custom_reminders")
+                logger.info("✓ Таблица custom_reminders не существует (уже удалена или не создавалась)")
             
     except sqlite3.Error as e:
         logger.error(f"❌ Ошибка при выполнении миграции: {e}")
