@@ -29,6 +29,8 @@ async def check_and_send_water_reminder(application, chat_id: int, settings: dic
     """
     Упрощенная версия: Отправляет напоминание о воде.
     
+    ИСПРАВЛЕНО: Добавлена проверка и удаление задач для неактивных пользователей.
+    
     Args:
         application: Telegram Application
         chat_id: ID чата пользователя
@@ -45,22 +47,31 @@ async def check_and_send_water_reminder(application, chat_id: int, settings: dic
         
         logger.info(f"⏰ Проверка времени для {chat_id}: час {now.hour}, диапазон {start_hour}-{end_hour}")
         
-        # Проверяем, находимся ли мы в рабочем диапазоне и активен ли пользователь
+        # ИСПРАВЛЕНИЕ: Проверяем is_active И удаляем задачи если пользователь неактивен
         from app.database import get_water_reminder
         user_settings = get_water_reminder(chat_id)
         
-        if not user_settings or not user_settings.get('is_active', False):
-            logger.info(f"⏭️ Напоминание пропущено - пользователь {chat_id} неактивен")
+        if not user_settings:
+            logger.warning(f"⚠️ Пользователь {chat_id} не найден в БД, удаляем задачи")
+            # Удаляем задачи для несуществующего пользователя
+            job_manager._remove_jobs_by_prefix(f"water_{chat_id}")
+            return
+            
+        if not user_settings.get('is_active', False):
+            logger.warning(f"⚠️ Пользователь {chat_id} неактивен, но задачи ещё существуют! Удаляем.")
+            # Это не должно происходить - задачи должны были быть удалены при остановке
+            job_manager._remove_jobs_by_prefix(f"water_{chat_id}")
             return
         
-        if start_hour <= now.hour < end_hour:
+        # ИСПРАВЛЕНИЕ: Изменяем условие на <= для включения 23:00
+        if start_hour <= now.hour <= end_hour:
             await application.bot.send_message(chat_id=chat_id, text=message)
-            logger.info(f"✅ Отправлено напоминание о воде для {chat_id}")
+            logger.info(f"✅ Отправлено напоминание о воде для {chat_id} в {now.hour}:00")
         else:
             logger.info(f"⏭️ Напоминание пропущено - час {now.hour} вне диапазона {start_hour}-{end_hour}")
             
     except Exception as e:
-        logger.error(f"❌ Ошибка при проверке и отправке напоминания о воде: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка при проверке и отправке напоминания о воде для {chat_id}: {e}", exc_info=True)
 
 # =============================================================================
 # ОБРАБОТЧИКИ МЕНЮ И ДИАЛОГОВ
@@ -124,21 +135,40 @@ def calculate_next_notification_time(timezone_str: str = DEFAULT_TIMEZONE) -> da
     return next_time
 
 async def water_stop(update: Update, context: CallbackContext):
-    """Останавливает напоминания о воде."""
+    """
+    Останавливает напоминания о воде.
+    
+    ИСПРАВЛЕНО: Улучшено логирование и порядок операций для надёжности.
+    """
     try:
         chat_id = update.effective_chat.id
         job_id_prefix = f"water_{chat_id}"
         
-        # Удаляем все задачи через job_manager
+        logger.info(f"🛑 Остановка напоминаний для {chat_id}...")
+        
+        # ИСПРАВЛЕНИЕ: СНАЧАЛА обновляем БД
+        set_water_reminder_active(chat_id, is_active=False)
+        logger.info(f"💾 БД обновлена: is_active=False для {chat_id}")
+        
+        # ЗАТЕМ удаляем ВСЕ задачи через job_manager
         jobs = job_manager.get_all_jobs()
         removed_count = 0
+        logger.info(f"📋 Всего задач в планировщике: {len(jobs)}")
+        
         for job in jobs:
             if job.id.startswith(job_id_prefix):
+                logger.info(f"🗑️ Удаляю задачу: {job.id} (next_run: {job.next_run_time})")
                 job_manager.remove_job(job.id)
                 removed_count += 1
         
-        set_water_reminder_active(chat_id, is_active=False)
-        logger.info(f"🛑 Напоминания о воде для {chat_id} остановлены ({removed_count} задач)")
+        logger.info(f"✅ Напоминания о воде для {chat_id} остановлены ({removed_count} задач удалено)")
+        
+        # ПРОВЕРКА: Убеждаемся, что задачи действительно удалены
+        remaining_jobs = [j for j in job_manager.get_all_jobs() if j.id.startswith(job_id_prefix)]
+        if remaining_jobs:
+            logger.error(f"❌ ОШИБКА: После остановки остались задачи: {[j.id for j in remaining_jobs]}")
+        else:
+            logger.info(f"✅ Проверка: все задачи для {chat_id} успешно удалены")
         
         text = Messages.WATER_STOPPED
         keyboard = [
@@ -151,7 +181,7 @@ async def water_stop(update: Update, context: CallbackContext):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
-        logger.error(f"❌ Ошибка в water_stop: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка в water_stop для {chat_id}: {e}", exc_info=True)
         await update.callback_query.answer(Messages.ERROR_GENERAL)
 
 async def water_resume(update: Update, context: CallbackContext):

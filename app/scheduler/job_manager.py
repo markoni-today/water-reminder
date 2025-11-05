@@ -156,6 +156,8 @@ class JobManager:
         Упрощенная версия: Планирует напоминания о воде с фиксированным расписанием.
         Создает 16 задач (по одной на каждый час с 08:00 до 23:00).
         
+        ИСПРАВЛЕНО: Улучшена изоляция пользователей и логирование.
+        
         Args:
             application: Экземпляр Telegram Application
             chat_id: ID чата пользователя
@@ -165,13 +167,18 @@ class JobManager:
         base_job_id = f"water_{chat_id}"
         
         try:
+            logger.info(f"📅 Начало планирования напоминаний для {chat_id}")
+            
             # Сохраняем application и функцию, если еще не сохранены
             if self.application is None:
                 self.set_application(application)
             if self.water_send_func is None:
                 self.water_send_func = send_func
             
-            # Удаляем все старые задачи для этого пользователя
+            # КРИТИЧЕСКИ ВАЖНО: Удаляем ВСЕ старые задачи для этого пользователя
+            jobs_before = len([j for j in self.scheduler.get_jobs() if j.id.startswith(base_job_id)])
+            if jobs_before > 0:
+                logger.info(f"🗑️ Найдено {jobs_before} старых задач для {chat_id}, удаляю...")
             self._remove_jobs_by_prefix(base_job_id)
             
             user_tz_str = settings.get('timezone', DEFAULT_TIMEZONE)
@@ -187,8 +194,14 @@ class JobManager:
             for hour in range(start_hour, end_hour + 1):
                 job_id = f"{base_job_id}_{hour}"
                 
-                # Используем сериализуемый класс
-                job_callable = WaterReminderJob(chat_id, settings.copy())
+                # ИСПРАВЛЕНИЕ: Создаем ГЛУБОКУЮ копию settings для каждой задачи
+                # чтобы избежать разделения состояния между пользователями
+                job_settings = {
+                    'timezone': user_tz_str,
+                    'is_active': settings.get('is_active', True),
+                    'chat_id': chat_id  # Добавляем chat_id для явности
+                }
+                job_callable = WaterReminderJob(chat_id, job_settings)
                 
                 job = self.scheduler.add_job(
                     job_callable,
@@ -202,12 +215,16 @@ class JobManager:
                     replace_existing=True
                 )
                 jobs_created += 1
-                logger.info(f"📝 Добавлена задача {job_id}, next run: {job.next_run_time}")
+                logger.info(f"📝 Добавлена задача {job_id}, next_run: {job.next_run_time}")
             
             logger.info(f"✅ Настроено {jobs_created} напоминаний для {chat_id} (каждый час с {start_hour:02d}:00 до {end_hour:02d}:00)")
             
+            # ПРОВЕРКА: Считаем общее количество задач в планировщике
+            total_jobs = len(self.scheduler.get_jobs())
+            logger.info(f"📊 Всего задач в планировщике: {total_jobs}")
+            
         except Exception as e:
-            logger.error(f"❌ Ошибка при планировании напоминаний о воде: {e}", exc_info=True)
+            logger.error(f"❌ Ошибка при планировании напоминаний о воде для {chat_id}: {e}", exc_info=True)
             raise
     
     def remove_job(self, job_id: str) -> bool:
